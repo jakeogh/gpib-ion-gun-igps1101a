@@ -40,7 +40,13 @@ CONTEXT = dict(help_option_names=["--help"])
 
 @click.group(context_settings=CONTEXT)
 @click.argument("port", metavar="PORT", nargs=1)
-@click.option("--baud", default=19200, show_default=True, type=int, help="Baud rate.")
+@click.option(
+    "--baud",
+    default=19200,
+    show_default=True,
+    type=int,
+    help="Baud rate.",
+)
 @click.option(
     "--timeout",
     default=1.0,
@@ -60,7 +66,11 @@ CONTEXT = dict(help_option_names=["--help"])
     show_default=True,
     help="Substring to verify against gmn (model name).",
 )
-@click.option("--debug", is_flag=True, help="Verbose TX/RX debug logs to stderr.")
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Verbose TX/RX debug logs to stderr.",
+)
 @click.option(
     "--idle-quiet",
     default=0.20,
@@ -192,7 +202,6 @@ def diagnostic(
                 dbg.log(f"Rejected {cmd}:{idx}: {txt.strip()}")
                 continue
             raw_val = None
-            # Parse the numeric part after the comma
             m = re.search(
                 r"^\s*(?:gi|go)\s*:\s*\d+\s*,\s*([-+]?\d+(?:\.\d+)?)", txt, re.I
             )
@@ -278,6 +287,14 @@ def diagnostic(
     show_default=True,
     help="Print header before the data row.",
 )
+@click.option(
+    "--autowrite",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, resolve_path=True),
+    help=(
+        "Existing directory; auto-create igps_1101a/YYYY-MM-DD and write a CSV "
+        "named '<epoch>_read.csv'. Also prints to stdout."
+    ),
+)
 @click.pass_context
 def read_cmd(
     ctx: click.Context,
@@ -286,6 +303,7 @@ def read_cmd(
     only_known: bool,
     sleep_between: float,
     csv_header: bool,
+    autowrite: Optional[str],
 ) -> None:
     """
     One-shot CSV of GI readings:
@@ -308,6 +326,22 @@ def read_cmd(
     if csv_header:
         print(",".join(header_cols), file=out)
     print(",".join(values), file=out)
+
+    # Optional autowrite to file while keeping stdout output
+    if autowrite:
+        date_str = time.strftime("%Y-%m-%d")
+        epoch_s = int(time.time())
+        dest_dir = os.path.join(autowrite, "igps_1101a", date_str)
+        os.makedirs(dest_dir, exist_ok=True)
+        auto_path = os.path.join(dest_dir, f"{epoch_s}_read.csv")
+        try:
+            with open(auto_path, "w", encoding="utf-8") as fp:
+                if csv_header:
+                    fp.write(",".join(header_cols) + "\n")
+                fp.write(",".join(values) + "\n")
+            click.echo(f"[autowrite] wrote {auto_path}", err=True)
+        except Exception as e:
+            click.echo(f"[autowrite] ERROR writing {auto_path}: {e}", err=True)
 
 
 # -------------------------------- log subcmd --------------------------------
@@ -373,6 +407,14 @@ def read_cmd(
     show_default=True,
     help="Write header row (stdout writes once).",
 )
+@click.option(
+    "--autowrite",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, resolve_path=True),
+    help=(
+        "Existing directory; auto-create igps_1101a/YYYY-MM-DD and write a CSV "
+        "named '<epoch>_log.csv'. Also prints to stdout."
+    ),
+)
 @click.pass_context
 def log_cmd(
     ctx: click.Context,
@@ -385,6 +427,7 @@ def log_cmd(
     out_path: Optional[str],
     append: bool,
     write_header: bool,
+    autowrite: Optional[str],
 ) -> None:
     """
     Periodic CSV snapshots:
@@ -420,6 +463,25 @@ def log_cmd(
         if write_header:
             print(header_line, file=out, flush=True)
 
+    # Prepare autowrite file (new file each run, prefixed with epoch seconds)
+    auto_fp = None
+    auto_path = None
+    if autowrite:
+        try:
+            date_str = time.strftime("%Y-%m-%d")
+            epoch_s = int(time.time())
+            dest_dir = os.path.join(autowrite, "igps_1101a", date_str)
+            os.makedirs(dest_dir, exist_ok=True)
+            auto_path = os.path.join(dest_dir, f"{epoch_s}_log.csv")
+            auto_fp = open(auto_path, "w", encoding="utf-8")
+            if write_header:
+                print(header_line, file=auto_fp, flush=True)
+            click.echo(f"[autowrite] writing to {auto_path}", err=True)
+        except Exception as e:
+            click.echo(f"[autowrite] ERROR creating file: {e}", err=True)
+            auto_fp = None
+            auto_path = None
+
     n = 0
     next_t = time.monotonic()
     try:
@@ -427,7 +489,16 @@ def log_cmd(
             values = build_csv_row(
                 client, known_indices, unknown_indices, sleep_between
             )
-            print(",".join(values), file=out, flush=True)
+            line = ",".join(values)
+            # Always write to the primary destination
+            print(line, file=out, flush=True)
+            # Also write to autowrite file if enabled
+            if autowrite and auto_fp:
+                print(line, file=auto_fp, flush=True)
+            # And ensure values go to stdout when autowrite is used,
+            # even if primary 'out' is a file.
+            if autowrite and out is not sys.stdout:
+                print(line, file=sys.stdout, flush=True)
 
             n += 1
             if count and n >= count:
@@ -441,3 +512,10 @@ def log_cmd(
         if fp:
             fp.flush()
             fp.close()
+        if autowrite and auto_fp:
+            try:
+                auto_fp.flush()
+                auto_fp.close()
+                click.echo(f"[autowrite] closed {auto_path}", err=True)
+            except Exception:
+                pass
