@@ -1,215 +1,239 @@
 #!/usr/bin/env python3
-# -*- coding: utf8 -*-
-# tab-width:4
-
-# pylint: disable=useless-suppression             # [I0021]
-# pylint: disable=missing-docstring               # [C0111] docstrings are always outdated and wrong
-# pylint: disable=missing-param-doc               # [W9015]
-# pylint: disable=missing-module-docstring        # [C0114]
-# pylint: disable=fixme                           # [W0511] todo encouraged
-# pylint: disable=line-too-long                   # [C0301]
-# pylint: disable=too-many-instance-attributes    # [R0902]
-# pylint: disable=too-many-lines                  # [C0302] too many lines in module
-# pylint: disable=invalid-name                    # [C0103] single letter var names, name too descriptive(!)
-# pylint: disable=too-many-return-statements      # [R0911]
-# pylint: disable=too-many-branches               # [R0912]
-# pylint: disable=too-many-statements             # [R0915]
-# pylint: disable=too-many-arguments              # [R0913]
-# pylint: disable=too-many-nested-blocks          # [R1702]
-# pylint: disable=too-many-locals                 # [R0914]
-# pylint: disable=too-many-public-methods         # [R0904]
-# pylint: disable=too-few-public-methods          # [R0903]
-# pylint: disable=no-member                       # [E1101] no member for base
-# pylint: disable=attribute-defined-outside-init  # [W0201]
-# pylint: disable=too-many-boolean-expressions    # [R0916] in if statement
-
 from __future__ import annotations
 
-# code style:
-#   avoid guessing on spelling, just write the word out
-#   dont_makedirs -> no_makedirs
-#   no guessing on case: local vars, functions and methods are lower case. classes are ThisClass(). Globals are THIS.
-#   del vars explicitely ASAP, assumptions are buggy
-#   rely on the compiler, code verbosity and explicitness can only be overruled by benchamrks (are really compiler bugs)
-#   no tabs. code must display the same independent of viewer
-#   no recursion, recursion is undecidiable, randomly bounded, and hard to reason about
-#   each elementis the same, no special cases for the first or last elemetnt:
-#       [1, 2, 3,] not [1, 2, 3]
-#       def this(*.
-#                a: bool,
-#                b: bool,
-#               ):
-#
-#   expicit loop control is better than while (condition):
-#       while True:
-#           # continue/break explicit logic
-#   only computer generated commit messages _should_ start with a cap letter
-
-
-# TODO:
-#   https://github.com/kvesteri/validators
-import os
 import sys
-import click
+import os
+import json
 import time
-import logging
-import sh
-from collections.abc import Sequence
-from clicktool import click_add_options
-from clicktool import click_global_options
-from clicktool import tvicgvd
-from clicktool import CONTEXT_SETTINGS
-from click_auto_help import AHGroup
-from signal import signal, SIGPIPE, SIG_DFL
-from pathlib import Path
-from mptool import output
-from mptool import mpd_enumerate
-from asserttool import validate_slice
-from eprint import eprint
-from asserttool import ic
-from asserttool import icp
-from globalverbose import gvd
-from retry_on_exception import retry_on_exception
-from timestamptool import get_timestamp
-from rich import print as pprint
-from configtool import get_config_directory
-from decimal import Decimal
+from typing import Any, Optional
 
-from unmp import unmp
-##from typing import Tuple
-#from typing import Generator
-#from typing import ByteString
-#from with_sshfs import sshfs
-#from with_chdir import chdir
-#from collections import defaultdict
-#from prettyprinter import cpprint
-#from prettyprinter import install_extras
-#install_extras(['attrs'])
-#from configtool import click_read_config
-#from configtool import click_write_config_entry
-#from asserttool import not_root
-#from pathtool import path_is_block_special
-#from pathtool import write_line_to_file
-#from getdents import files
-#from prettytable import PrettyTable
-#output_table = PrettyTable()
+import click
+try:
+    from rich import print as pprint  # pretty JSON if TTY
+except Exception:
+    pprint = print  # fallback
 
-logging.basicConfig(level=logging.INFO)
-sh.mv = None  # use sh.busybox('mv'), coreutils ignores stdin read errors
+from igps1101a import (
+    KNOWN_GI_SCALE, KNOWN_ORDER,
+    IdInfo, StatusInfo, ChannelHint, Reading,
+    DebugLog, HostAscii,
+    parse_gmc_hints, parse_status, parse_id,
+    verify_expected_device,
+    build_indices, build_csv_header, build_csv_row,
+    gi_read, format_table,
+)
 
-# click-command-tree
-#from click_plugins import with_plugins
-#from pkg_resources import iter_entry_points
+CONTEXT = dict(help_option_names=["--help"])
 
-# import pdb; pdb.set_trace()
-# #set_trace(term_size=(80, 24))
-# from pudb import set_trace; set_trace(paused=False)
-
-##def log_uncaught_exceptions(ex_cls, ex, tb):
-##   eprint(''.join(traceback.format_tb(tb)))
-##   eprint('{0}: {1}'.format(ex_cls, ex))
-##
-##sys.excepthook = log_uncaught_exceptions
-
-#this should be earlier in the imports, but isort stops working
-signal(SIGPIPE, SIG_DFL)
-
-APP_NAME = "power_supply_igps1101a_tool"
-
-# @with_plugins(iter_entry_points('click_command_tree'))
-@click.group(context_settings=CONTEXT_SETTINGS, no_args_is_help=True, cls=AHGroup)
-@click_add_options(click_global_options)
+@click.group(context_settings=CONTEXT)
+@click.argument("port", metavar="PORT", nargs=1)
+@click.option("--baud", default=19200, show_default=True, type=int, help="Baud rate.")
+@click.option("--timeout", default=1.0, show_default=True, type=float, help="Per-op serial timeout (s).")
+@click.option("--xonxoff/--no-xonxoff", default=True, show_default=True, help="Enable/disable software flow control.")
+@click.option("--expect-model", default="IGPS-1101A", show_default=True, help="Substring to verify against gmn (model name).")
+@click.option("--debug", is_flag=True, help="Verbose TX/RX debug logs to stderr.")
+@click.option("--idle-quiet", default=0.20, show_default=True, type=float, help="RX: end read after this many seconds of silence.")
+@click.option("--max-rx-time", default=1.50, show_default=True, type=float, help="RX: hard cap on a single response read (s).")
 @click.pass_context
-def cli(ctx: click.Context,
-        verbose_inf: bool,
-        dict_output: bool,
-        verbose: bool = False,
-        ) -> None:
+def cli(ctx: click.Context, port: str, baud: int, timeout: float, xonxoff: bool,
+        expect_model: str, debug: bool, idle_quiet: float, max_rx_time: float) -> None:
+    """IGPS-1101A tools (READ-ONLY).  PORT: e.g. /dev/ttyUSB0"""
+    dbg = DebugLog(enabled=debug)
+    try:
+        client = HostAscii(
+            port=port,
+            baud=baud,
+            timeout=timeout,
+            xonxoff=xonxoff,
+            dbg=dbg,
+            idle_quiet=idle_quiet,
+            max_rx_time=max_rx_time,
+        )
+    except Exception as e:
+        click.echo(f"ERROR: Unable to open serial port {port}: {e}", err=True)
+        raise click.Abort()
 
-    tty, verbose = tvicgvd(
-        ctx=ctx,
-        verbose=verbose,
-        verbose_inf=verbose_inf,
-        ic=ic,
-        gvd=gvd,
-    )
+    try:
+        idinfo = verify_expected_device(client, expect_model, dbg)
+    except Exception as e:
+        click.echo(f"ERROR: {e}", err=True)
+        client.close()
+        raise click.Abort()
 
-    global APP_NAME
-    config_directory = get_config_directory(click_instance=click, app_name=APP_NAME)
-    config_directory.mkdir(exist_ok=True)
-    ctx.obj["config_directory"] = config_directory
+    ctx.obj = dict(client=client, dbg=dbg, idinfo=idinfo, port=port, baud=baud)
 
+@cli.result_callback()
+def close_client(*args: Any, **kwargs: Any) -> None:
+    ctx = click.get_current_context(silent=True)
+    if ctx and ctx.obj and "client" in ctx.obj:
+        try:
+            ctx.obj["client"].close()
+        except Exception:
+            pass
 
-#@click.argument("slice_syntax", type=validate_slice, nargs=1)
-@cli.command()
-@click.argument('keys', type=str, nargs=-1)
-@click.argument("sysskel",
-                type=click.Path(exists=False,
-                                dir_okay=True,
-                                file_okay=False,
-                                allow_dash=False,
-                                path_type=Path,),
-                nargs=1,
-                required=True,)
-@click.option('--ipython', is_flag=True)
-@click_add_options(click_global_options)
+# ----------------------------- diagnostic subcmd ----------------------------
+@cli.command("diagnostic", context_settings=CONTEXT)
+@click.option("--probe-min", default=0, show_default=True, type=int, help="First channel index to probe with go/gi (read-only).")
+@click.option("--probe-max", default=31, show_default=True, type=int, help="Last channel index to probe with go/gi (read-only).")
+@click.option("--sleep", "sleep_between", default=0.06, show_default=True, type=float, help="Sleep between read commands (s).")
+@click.option("--json-out", type=click.Path(dir_okay=False), help="Write full JSON dump to this path.")
+@click.option("--no-table", is_flag=True, help="Suppress human table output (still writes JSON if --json-out).")
 @click.pass_context
-def thing(ctx: click.Context,
-        keys: tuple[str, ...],
-        sysskel: Path,
-        ipython: bool,
-        verbose_inf: bool,
-        dict_output: bool,
-        verbose: bool = False,
-        ) -> None:
+def diagnostic(ctx: click.Context, probe_min: int, probe_max: int, sleep_between: float, json_out: Optional[str], no_table: bool) -> None:
+    """Full sweep of go/gi channels; shows raw counts and any parsed hints."""
+    if probe_min < 0 or probe_max < probe_min or probe_max > 255:
+        raise click.UsageError("--probe-min/max must define a sane non-negative range (e.g., 0..31).")
 
-    tty, verbose = tvicgvd(
-        ctx=ctx,
-        verbose=verbose,
-        verbose_inf=verbose_inf,
-        ic=ic,
-        gvd=gvd,
-    )
+    client: HostAscii = ctx.obj["client"]
+    dbg: DebugLog = ctx.obj["dbg"]
+    idinfo: IdInfo = ctx.obj["idinfo"]
 
-    if keys:
-        iterator = keys
+    resp_gs  = client.txrx("gs")
+    resp_gmc = client.txrx("gmc")
+    status = parse_status(resp_gs)
+    hints  = parse_gmc_hints(resp_gmc)
+
+    readings: list[Reading] = []
+    for idx in range(probe_min, probe_max + 1):
+        for cmd in ("go", "gi"):
+            txt = client.txrx(f"{cmd}:{idx}")
+            if not txt.strip():
+                dbg.log(f"Empty reply for {cmd}:{idx}")
+                continue
+            if re.search(r"(invalid|error|unknown|egi:c|ego:c)", txt, re.I):
+                dbg.log(f"Rejected {cmd}:{idx}: {txt.strip()}")
+                continue
+            raw_val = None
+            # Parse the numeric part after the comma
+            m = re.search(r"^\s*(?:gi|go)\s*:\s*\d+\s*,\s*([-+]?\d+(?:\.\d+)?)", txt, re.I)
+            if m:
+                try:
+                    raw_val = float(m.group(1))
+                except Exception:
+                    raw_val = None
+            name = units = None
+            scaled = None
+            if cmd == "gi" and idx in KNOWN_GI_SCALE and raw_val is not None:
+                name, div = KNOWN_GI_SCALE[idx]
+                units = "V"
+                scaled = raw_val / div
+            readings.append(Reading(
+                cmd=cmd, index=idx, raw_text=txt.strip(), raw_value=raw_val,
+                scaled_value=scaled, name=name, units=units
+            ))
+            time.sleep(sleep_between)
+
+    doc: dict[str, Any] = {
+        "identity": asdict(idinfo),
+        "status": asdict(status),
+        "config_text": resp_gmc,
+        "readings": [asdict(r) for r in readings],
+        "port": ctx.obj["port"],
+        "baud": ctx.obj["baud"],
+        "timestamp": time.time(),
+    }
+    if not no_table:
+        print(format_table(idinfo, status, readings))
+    if json_out:
+        with open(json_out, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2)
+        print(f"Wrote JSON to {json_out}")
     else:
-        # bug, a dict can sneak in other types
-        iterator: Sequence[dict | str] = unmp(valid_types=[dict, str],)
-
-    # need to send a single key, or multiple keys, if multiple keys, keys need to specified on the commandline
-    # either way, the output is still a dict
-
-    index = 0
-    _k = None
-    for index, _mpobject, key_count in mpd_enumerate(iterator):
-        #if index == 0:
-        #    first_type = type(_mpobject)
-        #    if first_type == dict:
-        #        key_count = len(list(_mpobject.keys()))
-        #    else:
-        #        key_count = None
-        if key_count > 1:
-            assert len(keys) > 0
-        if isinstance(_mpobject, dict):
-            for _k, _v in _mpobject.items():
-                break   # assume single k:v dict
+        if sys.stdout.isatty() and pprint is not print:
+            pprint(doc)  # type: ignore[misc]
         else:
-            _v = _mpobject
-        _p = Path(os.fsdecode(_v)).resolve()
-        ic(index, _p)
+            print(json.dumps(doc, indent=2))
 
-        #with open(_p, 'rb') as fh:
-        #    path_bytes_data = fh.read()
+# ------------------------------- read subcmd --------------------------------
+@cli.command("read", context_settings=CONTEXT)
+@click.option("--probe-min", default=0, show_default=True, type=int, help="First GI channel index to include (read-only).")
+@click.option("--probe-max", default=31, show_default=True, type=int, help="Last GI channel index to include (read-only).")
+@click.option("--only-known/--all-gi", default=False, show_default=True, help="Poll only mapped channels (faster).")
+@click.option("--sleep", "sleep_between", default=0.02, show_default=True, type=float, help="Sleep between GI reads (s).")
+@click.option("--csv-header/--no-csv-header", default=True, show_default=True, help="Print header before the data row.")
+@click.pass_context
+def read_cmd(ctx: click.Context, probe_min: int, probe_max: int, only_known: bool, sleep_between: float, csv_header: bool) -> None:
+    """
+    One-shot CSV of GI readings:
+    - Known channels in volts (engineering units).
+    - Unknown channels as counts columns named 'gi:<index>'.
+    Timestamp is unix seconds with 9 decimals.
+    """
+    if probe_min < 0 or probe_max < probe_min or probe_max > 255:
+        raise click.UsageError("--probe-min/max must define a sane non-negative range (e.g., 0..31).")
 
-        output(_p, reason=_mpobject, dict_output=dict_output, tty=tty, verbose=gvd,)
+    client: HostAscii = ctx.obj["client"]
+    known_indices, unknown_indices = build_indices(probe_min, probe_max, only_known)
 
-#        if ipython:
-#            import IPython; IPython.embed()
-            # import pdb; pdb.set_trace()
-            # from pudb import set_trace; set_trace(paused=False)
+    header_cols = build_csv_header(known_indices, unknown_indices)
+    values = build_csv_row(client, known_indices, unknown_indices, sleep_between)
 
-if __name__ == '__main__':
-    # pylint: disable=E1120
-    cli()
+    out = sys.stdout
+    if csv_header:
+        print(",".join(header_cols), file=out)
+    print(",".join(values), file=out)
+
+# -------------------------------- log subcmd --------------------------------
+@cli.command("log", context_settings=CONTEXT)
+@click.option("--probe-min", default=0, show_default=True, type=int, help="First GI channel index to include (read-only).")
+@click.option("--probe-max", default=31, show_default=True, type=int, help="Last GI channel index to include (read-only).")
+@click.option("--only-known/--all-gi", default=False, show_default=True, help="Poll only mapped channels (faster).")
+@click.option("--sleep", "sleep_between", default=0.02, show_default=True, type=float, help="Sleep between GI reads (s).")
+@click.option("--interval", default=5.0, show_default=True, type=float, help="Seconds between snapshots.")
+@click.option("--count", default=0, show_default=True, type=int, help="Number of samples (0 = run until Ctrl-C).")
+@click.option("--out", "out_path", type=click.Path(dir_okay=False), help="CSV file to write. Defaults to stdout if omitted.")
+@click.option("--append/--no-append", default=True, show_default=True, help="Append to --out if it exists; otherwise overwrite.")
+@click.option("--header/--no-header", "write_header", default=True, show_default=True, help="Write header row (stdout writes once).")
+@click.pass_context
+def log_cmd(ctx: click.Context, probe_min: int, probe_max: int, only_known: bool, sleep_between: float,
+            interval: float, count: int, out_path: Optional[str], append: bool, write_header: bool) -> None:
+    """
+    Periodic CSV snapshots:
+    - Known channels in volts (engineering units).
+    - Unknown channels as counts columns named 'gi:<index>'.
+    Timestamp is unix seconds with 9 decimals.
+    """
+    if probe_min < 0 or probe_max < probe_min or probe_max > 255:
+        raise click.UsageError("--probe-min/max must define a sane non-negative range (e.g., 0..31).")
+    if interval <= 0:
+        raise click.UsageError("--interval must be > 0")
+
+    client: HostAscii = ctx.obj["client"]
+    known_indices, unknown_indices = build_indices(probe_min, probe_max, only_known)
+
+    header_cols = build_csv_header(known_indices, unknown_indices)
+    header_line = ",".join(header_cols)
+
+    out = sys.stdout
+    fp = None
+    if out_path:
+        mode = "a" if append else "w"
+        fp = open(out_path, mode, encoding="utf-8")
+        out = fp
+        header_already = append and os.path.exists(out_path) and os.path.getsize(out_path) > 0
+        if write_header and not header_already:
+            print(header_line, file=out, flush=True)
+    else:
+        if write_header:
+            print(header_line, file=out, flush=True)
+
+    n = 0
+    next_t = time.monotonic()
+    try:
+        while True:
+            values = build_csv_row(client, known_indices, unknown_indices, sleep_between)
+            print(",".join(values), file=out, flush=True)
+
+            n += 1
+            if count and n >= count:
+                break
+
+            next_t += interval
+            time.sleep(max(0.0, next_t - time.monotonic()))
+    except KeyboardInterrupt:
+        click.echo("\nStopped by user (Ctrl-C).", err=True)
+    finally:
+        if fp:
+            fp.flush()
+            fp.close()
 
