@@ -17,7 +17,7 @@ from typing import Tuple
 import serial
 from rich import print as pprint  # noqa: F401
 
-# ============================ Known Scaling ===============================
+# =========================== Known Scaling ===============================
 # Hard-coded counts -> volts divisors from your front-panel mapping.
 KNOWN_GI_SCALE: dict[int, tuple[str, float]] = {
     0: ("I+ ENERGY", 10.0),  # 5598 -> 559.8 V
@@ -32,7 +32,7 @@ KNOWN_GI_SCALE: dict[int, tuple[str, float]] = {
 KNOWN_ORDER = sorted(KNOWN_GI_SCALE.keys())  # [0,1,2,3,4,5,8,9]
 
 
-# ============================== Data Models ===============================
+# ============================= Data Models ===============================
 @dataclass
 class IdInfo:
     firmware: Optional[str]
