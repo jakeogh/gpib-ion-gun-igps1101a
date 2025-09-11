@@ -8,7 +8,6 @@ import sys
 import time
 from dataclasses import asdict
 from typing import Any
-from typing import Optional
 
 import click
 from rich import print as pprint  # pretty JSON if TTY
@@ -87,9 +86,9 @@ def cli(
     port: str,
     baud: int,
     timeout: float,
+    debug: bool,
     xonxoff: bool,
     expect_model: str,
-    debug: bool,
     idle_quiet: float,
     max_rx_time: float,
 ) -> None:
@@ -175,7 +174,7 @@ def diagnostic(
     probe_min: int,
     probe_max: int,
     sleep_between: float,
-    json_out: Optional[str],
+    json_out: None | str,
     no_table: bool,
 ) -> None:
     """Full sweep of go/gi channels; shows raw counts and any parsed hints."""
@@ -305,7 +304,7 @@ def read_cmd(
     only_known: bool,
     sleep_between: float,
     csv_header: bool,
-    autowrite: Optional[str],
+    autowrite: None | str,
 ) -> None:
     """
     One-shot CSV of GI readings:
@@ -431,10 +430,10 @@ def log_cmd(
     sleep_between: float,
     interval: float,
     count: int,
-    out_path: Optional[str],
+    out_path: None | str,
     append: bool,
     write_header: bool,
-    autowrite: Optional[str],
+    autowrite: None | str,
 ) -> None:
     """
     Periodic CSV snapshots:
