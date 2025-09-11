@@ -11,29 +11,25 @@ from typing import Any
 from typing import Optional
 
 import click
+from rich import print as pprint  # pretty JSON if TTY
 
-try:
-    from rich import print as pprint  # pretty JSON if TTY
-except Exception:
-    pprint = print  # fallback
-
-from .igps1101a import KNOWN_GI_SCALE
-from .igps1101a import KNOWN_ORDER
-from .igps1101a import ChannelHint
-from .igps1101a import DebugLog
-from .igps1101a import HostAscii
-from .igps1101a import IdInfo
-from .igps1101a import Reading
-from .igps1101a import StatusInfo
-from .igps1101a import build_csv_header
-from .igps1101a import build_csv_row
-from .igps1101a import build_indices
-from .igps1101a import format_table
-from .igps1101a import gi_read
-from .igps1101a import parse_gmc_hints
-from .igps1101a import parse_id
-from .igps1101a import parse_status
-from .igps1101a import verify_expected_device
+from .gpib_ion_gun_igps1101a import KNOWN_GI_SCALE
+from .gpib_ion_gun_igps1101a import KNOWN_ORDER
+from .gpib_ion_gun_igps1101a import ChannelHint
+from .gpib_ion_gun_igps1101a import DebugLog
+from .gpib_ion_gun_igps1101a import HostAscii
+from .gpib_ion_gun_igps1101a import IdInfo
+from .gpib_ion_gun_igps1101a import Reading
+from .gpib_ion_gun_igps1101a import StatusInfo
+from .gpib_ion_gun_igps1101a import build_csv_header
+from .gpib_ion_gun_igps1101a import build_csv_row
+from .gpib_ion_gun_igps1101a import build_indices
+from .gpib_ion_gun_igps1101a import format_table
+from .gpib_ion_gun_igps1101a import gi_read
+from .gpib_ion_gun_igps1101a import parse_gmc_hints
+from .gpib_ion_gun_igps1101a import parse_id
+from .gpib_ion_gun_igps1101a import parse_status
+from .gpib_ion_gun_igps1101a import verify_expected_device
 
 CONTEXT = dict(help_option_names=["--help"])
 
