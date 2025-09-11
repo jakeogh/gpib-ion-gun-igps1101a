@@ -120,7 +120,13 @@ def cli(
         client.close()
         raise click.Abort()
 
-    ctx.obj = dict(client=client, dbg=dbg, idinfo=idinfo, port=port, baud=baud)
+    ctx.obj = dict(
+        client=client,
+        dbg=dbg,
+        idinfo=idinfo,
+        port=port,
+        baud=baud,
+    )
 
 
 @cli.result_callback()
@@ -133,7 +139,7 @@ def close_client(*args: Any, **kwargs: Any) -> None:
             pass
 
 
-# ----------------------------- diagnostic subcmd ----------------------------
+# ---------------------------- diagnostic subcmd ----------------------------
 @cli.command("diagnostic", context_settings=CONTEXT)
 @click.option(
     "--probe-min",
@@ -320,7 +326,12 @@ def read_cmd(
     known_indices, unknown_indices = build_indices(probe_min, probe_max, only_known)
 
     header_cols = build_csv_header(known_indices, unknown_indices)
-    values = build_csv_row(client, known_indices, unknown_indices, sleep_between)
+    values = build_csv_row(
+        client,
+        known_indices,
+        unknown_indices,
+        sleep_between,
+    )
 
     out = sys.stdout
     if csv_header:
@@ -487,7 +498,10 @@ def log_cmd(
     try:
         while True:
             values = build_csv_row(
-                client, known_indices, unknown_indices, sleep_between
+                client,
+                known_indices,
+                unknown_indices,
+                sleep_between,
             )
             line = ",".join(values)
             # Always write to the primary destination

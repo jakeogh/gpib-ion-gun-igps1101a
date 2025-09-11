@@ -1,2 +1,2 @@
 #!/bin/sh
-echo "https://github.com/jakeogh/power-supply-igps1101a-tool"
+echo "https://github.com/jakeogh/gpib-ion-gun-igps1101a"
