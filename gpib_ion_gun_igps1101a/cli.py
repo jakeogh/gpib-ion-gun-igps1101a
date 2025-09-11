@@ -348,6 +348,7 @@ def read_cmd(
             click.echo(f"[autowrite] wrote {auto_path}", err=True)
         except Exception as e:
             click.echo(f"[autowrite] ERROR writing {auto_path}: {e}", err=True)
+            raise
 
 
 # -------------------------------- log subcmd --------------------------------
