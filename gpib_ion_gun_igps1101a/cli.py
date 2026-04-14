@@ -10,7 +10,7 @@ from dataclasses import asdict
 from typing import Any
 
 import click
-from rich import print as pprint  # pretty JSON if TTY
+from rich import print as pprint
 
 from .gpib_ion_gun_igps1101a import KNOWN_GI_SCALE
 from .gpib_ion_gun_igps1101a import KNOWN_ORDER
@@ -28,6 +28,7 @@ from .gpib_ion_gun_igps1101a import gi_read
 from .gpib_ion_gun_igps1101a import parse_gmc_hints
 from .gpib_ion_gun_igps1101a import parse_id
 from .gpib_ion_gun_igps1101a import parse_status
+from .gpib_ion_gun_igps1101a import probe_responsive_unknown
 from .gpib_ion_gun_igps1101a import verify_expected_device
 
 CONTEXT = dict(help_option_names=["--help"])
@@ -35,13 +36,7 @@ CONTEXT = dict(help_option_names=["--help"])
 
 @click.group(context_settings=CONTEXT)
 @click.argument("port", metavar="PORT", nargs=1)
-@click.option(
-    "--baud",
-    default=19200,
-    show_default=True,
-    type=int,
-    help="Baud rate.",
-)
+@click.option("--baud", default=19200, show_default=True, type=int, help="Baud rate.")
 @click.option(
     "--timeout",
     default=1.0,
@@ -61,17 +56,13 @@ CONTEXT = dict(help_option_names=["--help"])
     show_default=True,
     help="Substring to verify against gmn (model name).",
 )
-@click.option(
-    "--debug",
-    is_flag=True,
-    help="Verbose TX/RX debug logs to stderr.",
-)
+@click.option("--debug", is_flag=True, help="Verbose TX/RX debug logs to stderr.")
 @click.option(
     "--idle-quiet",
     default=0.05,
     show_default=True,
     type=float,
-    help="RX: end read after this many seconds of silence (post-CRLF drain).",
+    help="RX: post-CRLF drain window / silent-line bail (s).",
 )
 @click.option(
     "--max-rx-time",
@@ -115,13 +106,7 @@ def cli(
         client.close()
         raise click.Abort()
 
-    ctx.obj = dict(
-        client=client,
-        dbg=dbg,
-        idinfo=idinfo,
-        port=port,
-        baud=baud,
-    )
+    ctx.obj = dict(client=client, dbg=dbg, idinfo=idinfo, port=port, baud=baud)
 
 
 @cli.result_callback()
@@ -136,38 +121,18 @@ def close_client(*args: Any, **kwargs: Any) -> None:
 
 # ---------------------------- diagnostic subcmd ----------------------------
 @cli.command("diagnostic", context_settings=CONTEXT)
-@click.option(
-    "--probe-min",
-    default=0,
-    show_default=True,
-    type=int,
-    help="First channel index to probe with go/gi (read-only).",
-)
-@click.option(
-    "--probe-max",
-    default=31,
-    show_default=True,
-    type=int,
-    help="Last channel index to probe with go/gi (read-only).",
-)
+@click.option("--probe-min", default=0, show_default=True, type=int)
+@click.option("--probe-max", default=31, show_default=True, type=int)
 @click.option(
     "--sleep",
     "sleep_between",
-    default=0.06,
+    default=0.0,
     show_default=True,
     type=float,
     help="Sleep between read commands (s).",
 )
-@click.option(
-    "--json-out",
-    type=click.Path(dir_okay=False),
-    help="Write full JSON dump to this path.",
-)
-@click.option(
-    "--no-table",
-    is_flag=True,
-    help="Suppress human table output (still writes JSON if --json-out).",
-)
+@click.option("--json-out", type=click.Path(dir_okay=False))
+@click.option("--no-table", is_flag=True)
 @click.pass_context
 def diagnostic(
     ctx: click.Context,
@@ -228,7 +193,8 @@ def diagnostic(
                     units=units,
                 )
             )
-            time.sleep(sleep_between)
+            if sleep_between > 0:
+                time.sleep(sleep_between)
 
     doc: dict[str, Any] = {
         "identity": asdict(idinfo),
@@ -254,20 +220,8 @@ def diagnostic(
 
 # ------------------------------- read subcmd --------------------------------
 @cli.command("read", context_settings=CONTEXT)
-@click.option(
-    "--probe-min",
-    default=0,
-    show_default=True,
-    type=int,
-    help="First GI channel index to include (read-only).",
-)
-@click.option(
-    "--probe-max",
-    default=31,
-    show_default=True,
-    type=int,
-    help="Last GI channel index to include (read-only).",
-)
+@click.option("--probe-min", default=0, show_default=True, type=int)
+@click.option("--probe-max", default=31, show_default=True, type=int)
 @click.option(
     "--only-known/--all-gi",
     default=False,
@@ -277,17 +231,12 @@ def diagnostic(
 @click.option(
     "--sleep",
     "sleep_between",
-    default=0.02,
+    default=0.0,
     show_default=True,
     type=float,
     help="Sleep between GI reads (s).",
 )
-@click.option(
-    "--csv-header/--no-csv-header",
-    default=True,
-    show_default=True,
-    help="Print header before the data row.",
-)
+@click.option("--csv-header/--no-csv-header", default=True, show_default=True)
 @click.option(
     "--autowrite",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, resolve_path=True),
@@ -306,12 +255,7 @@ def read_cmd(
     csv_header: bool,
     autowrite: None | str,
 ) -> None:
-    """
-    One-shot CSV of GI readings:
-    - Known channels in volts (engineering units).
-    - Unknown channels as counts columns named 'gi:<index>'.
-    Timestamp is unix seconds with 9 decimals.
-    """
+    """One-shot CSV of GI readings (volts for known, counts for unknown)."""
     if probe_min < 0 or probe_max < probe_min or probe_max > 255:
         raise click.UsageError(
             "--probe-min/max must define a sane non-negative range (e.g., 0..31)."
@@ -321,12 +265,7 @@ def read_cmd(
     known_indices, unknown_indices = build_indices(probe_min, probe_max, only_known)
 
     header_cols = build_csv_header(known_indices, unknown_indices)
-    values = build_csv_row(
-        client,
-        known_indices,
-        unknown_indices,
-        sleep_between,
-    )
+    values = build_csv_row(client, known_indices, unknown_indices, sleep_between)
 
     out = sys.stdout
     if csv_header:
@@ -352,20 +291,8 @@ def read_cmd(
 
 # -------------------------------- log subcmd --------------------------------
 @cli.command("log", context_settings=CONTEXT)
-@click.option(
-    "--probe-min",
-    default=0,
-    show_default=True,
-    type=int,
-    help="First GI channel index to include (read-only).",
-)
-@click.option(
-    "--probe-max",
-    default=31,
-    show_default=True,
-    type=int,
-    help="Last GI channel index to include (read-only).",
-)
+@click.option("--probe-min", default=0, show_default=True, type=int)
+@click.option("--probe-max", default=31, show_default=True, type=int)
 @click.option(
     "--only-known/--all-gi",
     default=False,
@@ -373,46 +300,27 @@ def read_cmd(
     help="Poll only mapped channels (faster).",
 )
 @click.option(
+    "--probe-skip/--no-probe-skip",
+    default=True,
+    show_default=True,
+    help=(
+        "On startup, probe unknown GI channels once and skip those that don't "
+        "respond. Has no effect with --only-known."
+    ),
+)
+@click.option(
     "--sleep",
     "sleep_between",
-    default=0.02,
+    default=0.0,
     show_default=True,
     type=float,
     help="Sleep between GI reads (s).",
 )
-@click.option(
-    "--interval",
-    default=5.0,
-    show_default=True,
-    type=float,
-    help="Seconds between snapshots.",
-)
-@click.option(
-    "--count",
-    default=0,
-    show_default=True,
-    type=int,
-    help="Number of samples (0 = run until Ctrl-C).",
-)
-@click.option(
-    "--out",
-    "out_path",
-    type=click.Path(dir_okay=False),
-    help="CSV file to write. Defaults to stdout if omitted.",
-)
-@click.option(
-    "--append/--no-append",
-    default=True,
-    show_default=True,
-    help="Append to --out if it exists; otherwise overwrite.",
-)
-@click.option(
-    "--header/--no-header",
-    "write_header",
-    default=True,
-    show_default=True,
-    help="Write header row (stdout writes once).",
-)
+@click.option("--interval", default=5.0, show_default=True, type=float)
+@click.option("--count", default=0, show_default=True, type=int)
+@click.option("--out", "out_path", type=click.Path(dir_okay=False))
+@click.option("--append/--no-append", default=True, show_default=True)
+@click.option("--header/--no-header", "write_header", default=True, show_default=True)
 @click.option(
     "--autowrite",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, resolve_path=True),
@@ -427,6 +335,7 @@ def log_cmd(
     probe_min: int,
     probe_max: int,
     only_known: bool,
+    probe_skip: bool,
     sleep_between: float,
     interval: float,
     count: int,
@@ -435,12 +344,7 @@ def log_cmd(
     write_header: bool,
     autowrite: None | str,
 ) -> None:
-    """
-    Periodic CSV snapshots:
-    - Known channels in volts (engineering units).
-    - Unknown channels as counts columns named 'gi:<index>'.
-    Timestamp is unix seconds with 9 decimals.
-    """
+    """Periodic CSV snapshots."""
     if probe_min < 0 or probe_max < probe_min or probe_max > 255:
         raise click.UsageError(
             "--probe-min/max must define a sane non-negative range (e.g., 0..31)."
@@ -450,6 +354,18 @@ def log_cmd(
 
     client: HostAscii = ctx.obj["client"]
     known_indices, unknown_indices = build_indices(probe_min, probe_max, only_known)
+
+    if probe_skip and unknown_indices:
+        before = list(unknown_indices)
+        unknown_indices = probe_responsive_unknown(
+            client, unknown_indices, sleep_between
+        )
+        skipped = sorted(set(before) - set(unknown_indices))
+        click.echo(
+            f"[probe-skip] kept {len(unknown_indices)}/{len(before)} unknown GI "
+            f"channels: kept={unknown_indices} skipped={skipped}",
+            err=True,
+        )
 
     header_cols = build_csv_header(known_indices, unknown_indices)
     header_line = ",".join(header_cols)
@@ -492,10 +408,7 @@ def log_cmd(
     try:
         while True:
             values = build_csv_row(
-                client,
-                known_indices,
-                unknown_indices,
-                sleep_between,
+                client, known_indices, unknown_indices, sleep_between
             )
             line = ",".join(values)
             print(line, file=out, flush=True)
@@ -523,3 +436,54 @@ def log_cmd(
                 click.echo(f"[autowrite] closed {auto_path}", err=True)
             except Exception:
                 pass
+
+
+# -------------------------------- raw subcmd --------------------------------
+@cli.command("raw", context_settings=CONTEXT)
+@click.argument("command", nargs=-1, required=True)
+@click.option(
+    "--repeat",
+    default=1,
+    show_default=True,
+    type=int,
+    help="Send the command this many times.",
+)
+@click.option(
+    "--sleep",
+    "sleep_between",
+    default=0.05,
+    show_default=True,
+    type=float,
+    help="Sleep between repeats (s).",
+)
+@click.pass_context
+def raw_cmd(
+    ctx: click.Context,
+    command: tuple[str, ...],
+    repeat: int,
+    sleep_between: float,
+) -> None:
+    """
+    Send an arbitrary HostASCII command and print the raw reply (repr'd).
+
+    Use this to probe whether the device supports batch GI queries:
+
+        gpib-ion-gun-igps1101a /dev/ttyUSB0 raw 'gi:0,1,2,3'
+        gpib-ion-gun-igps1101a /dev/ttyUSB0 raw 'gi:0 gi:1 gi:2'
+        gpib-ion-gun-igps1101a /dev/ttyUSB0 raw 'gia'
+        gpib-ion-gun-igps1101a /dev/ttyUSB0 raw 'gi*'
+
+    A clean reply containing values for multiple channels = batch supported.
+    'invalid' / 'egi:c' / empty = not supported in that form.
+    Add --debug at the top level for full TX/RX hex dumps.
+    """
+    client: HostAscii = ctx.obj["client"]
+    cmd = " ".join(command)
+    for i in range(repeat):
+        txt = client.txrx(cmd)
+        sys.stdout.write(f"--- reply {i+1}/{repeat} ---\n")
+        sys.stdout.write(repr(txt) + "\n")
+        sys.stdout.write(txt if txt.endswith("\n") else txt + "\n")
+        sys.stdout.flush()
+        if i + 1 < repeat and sleep_between > 0:
+            time.sleep(sleep_between)

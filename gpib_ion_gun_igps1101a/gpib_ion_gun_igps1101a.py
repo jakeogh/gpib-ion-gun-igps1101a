@@ -5,7 +5,9 @@ import binascii
 import json
 import os
 import re
+import threading
 import time
+from collections import deque
 from dataclasses import asdict
 from dataclasses import dataclass
 from typing import Any
@@ -18,18 +20,17 @@ import serial
 from rich import print as pprint  # noqa: F401
 
 # ========================== Known Scaling ===============================
-# Hard-coded counts -> volts divisors from your front-panel mapping.
 KNOWN_GI_SCALE: dict[int, tuple[str, float]] = {
-    0: ("I+ ENERGY", 10.0),  # 5598 -> 559.8 V
-    1: ("SOURCE", 1000.0),  # 1699 -> 1.699 V
-    2: ("FIELD CONTROL", 10.0),  # 1698 -> 169.8 V
-    3: ("EXTRACT", 1.0),  # 1050 -> 1050 V
-    4: ("FOCUS", 1.0),  # 569  -> 569 V
-    5: ("E- ENERGY", 10.0),  # 899  -> 89.9 V
-    8: ("X DEFL", 100.0),  # 98   -> 0.98 V
-    9: ("Y DEFL", 100.0),  # 1701 -> 17.01 V
+    0: ("I+ ENERGY", 10.0),
+    1: ("SOURCE", 1000.0),
+    2: ("FIELD CONTROL", 10.0),
+    3: ("EXTRACT", 1.0),
+    4: ("FOCUS", 1.0),
+    5: ("E- ENERGY", 10.0),
+    8: ("X DEFL", 100.0),
+    9: ("Y DEFL", 100.0),
 }
-KNOWN_ORDER = sorted(KNOWN_GI_SCALE.keys())  # [0,1,2,3,4,5,8,9]
+KNOWN_ORDER = sorted(KNOWN_GI_SCALE.keys())
 
 
 # ============================ Data Models ===============================
@@ -72,7 +73,6 @@ class Reading:
 
 # ============================== Debug Utilities =============================
 def unix_ts() -> str:
-    """Unix seconds with 9 decimal places (ns precision as string)."""
     return f"{time.time_ns()/1e9:.9f}"
 
 
@@ -91,12 +91,7 @@ class DebugLog:
     def log(self, *a: object) -> None:
         if self.enabled:
             t = time.strftime("%Y-%m-%d %H:%M:%S") + f".{int((time.time()%1)*1000):03d}"
-            print(
-                "[DEBUG]",
-                t,
-                *a,
-                flush=True,
-            )
+            print("[DEBUG]", t, *a, flush=True)
 
 
 # ================================ Serial I/O ================================
@@ -126,7 +121,7 @@ class HostAscii:
             stopbits=serial.STOPBITS_ONE,
             xonxoff=xonxoff,
             rtscts=False,
-            timeout=0.02,  # short poll timeout for tight RX loop
+            timeout=0.02,
             write_timeout=float(timeout),
         )
         self.ser.dtr = True
@@ -145,12 +140,6 @@ class HostAscii:
             self.dbg.log("Error during close:", e)
 
     def _read_response(self, terminator: bytes = b"\r\n") -> bytes:
-        """
-        Return as soon as we receive a CRLF-terminated line (the HostASCII
-        response delimiter). Falls back to max_rx_time on truly silent channels,
-        and uses idle_quiet as a final drain check after CRLF is seen to catch
-        any trailing bytes the device sends in a second packet.
-        """
         start = time.time()
         last_data = start
         buf = bytearray()
@@ -161,7 +150,6 @@ class HostAscii:
                 buf.extend(chunk)
                 last_data = now
                 if terminator in buf:
-                    # Brief drain for any trailing bytes
                     drain_start = time.time()
                     while (time.time() - drain_start) < self.idle_quiet:
                         tail = self.ser.read(self.rx_chunk)
@@ -170,18 +158,12 @@ class HostAscii:
                             drain_start = time.time()
                     return bytes(buf)
                 continue
-            # No data this poll
             if (now - start) >= self.max_rx_time:
                 return bytes(buf)
-            # If we've received some data but no terminator, also bail on idle
             if buf and (now - last_data) >= self.idle_quiet:
                 return bytes(buf)
 
-    def txrx(
-        self,
-        cmd: str,
-        sleep_before_read: float = 0.0,
-    ) -> str:
+    def txrx(self, cmd: str, sleep_before_read: float = 0.0) -> str:
         data = cmd.encode("ascii") + b"\r\n"
         self.dbg.log(f"TX {cmd!r} [{len(data)}B] hex={_hexdump(data)}")
         self.ser.reset_input_buffer()
@@ -209,7 +191,6 @@ def _first_kv(line: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def _parse_reply_value(s: str) -> Optional[float]:
-    """Prefer the value after the comma in 'gi:N,<value>' / 'go:N,<value>'."""
     m = _GI_PAIR_RE.search(s)
     if m:
         try:
@@ -233,12 +214,7 @@ def _parse_status_code(s: str) -> Optional[int]:
     return None
 
 
-def parse_id(
-    gfw: str,
-    gmn: str,
-    gmr: str,
-    gsn: str,
-) -> IdInfo:
+def parse_id(gfw: str, gmn: str, gmr: str, gsn: str) -> IdInfo:
     fw = mn = mr = sn = None
     for line in gfw.splitlines():
         k, v = _first_kv(line)
@@ -260,19 +236,13 @@ def parse_id(
         if k == "gsn":
             sn = v.strip()
             break
-    return IdInfo(
-        firmware=fw,
-        model_name=mn,
-        model_rev=mr,
-        serial_number=sn,
-    )
+    return IdInfo(firmware=fw, model_name=mn, model_rev=mr, serial_number=sn)
 
 
 def parse_status(gs: str) -> StatusInfo:
     return StatusInfo(raw=gs.strip(), code=_parse_status_code(gs))
 
 
-# gmc parser (your unit returns compact "gmc:05-004102")
 _CHAN_LINE_RE = re.compile(
     r"(?:(?:^|\s)chan(?:nel)?\s*[:#]?\s*(\d+)|^\s*(?:out|output|in|input)\s*[:#]?\s*(\d+)|^\s*(\d+)\s*[:\-])",
     re.I,
@@ -364,12 +334,7 @@ def verify_expected_device(
     resp_gmn = cli.txrx("gmn")
     resp_gmr = cli.txrx("gmr")
     resp_gsn = cli.txrx("gsn")
-    idinfo = parse_id(
-        resp_gfw,
-        resp_gmn,
-        resp_gmr,
-        resp_gsn,
-    )
+    idinfo = parse_id(resp_gfw, resp_gmn, resp_gmr, resp_gsn)
     dbg.log("Identity parsed:", idinfo)
     model = (idinfo.model_name or "").strip()
     if not model:
@@ -406,6 +371,22 @@ def build_indices(
     return known, unknown
 
 
+def probe_responsive_unknown(
+    client: HostAscii,
+    unknown_indices: List[int],
+    sleep_between: float = 0.0,
+) -> List[int]:
+    """One-shot probe: keep only unknown channels that return a parsable value."""
+    survivors: list[int] = []
+    for i in unknown_indices:
+        val, _txt = gi_read(client, i)
+        if val is not None:
+            survivors.append(i)
+        if sleep_between > 0:
+            time.sleep(sleep_between)
+    return survivors
+
+
 def build_csv_header(known_indices: List[int], unknown_indices: List[int]) -> List[str]:
     header_cols: list[str] = ["timestamp"]
     for i in known_indices:
@@ -429,7 +410,8 @@ def build_csv_row(
         else:
             divisor = KNOWN_GI_SCALE[i][1]
             values.append(f"{(val/divisor):.6f}")
-        time.sleep(sleep_between)
+        if sleep_between > 0:
+            time.sleep(sleep_between)
     for i in unknown_indices:
         val, txt = gi_read(client, i)
         if val is None:
@@ -437,8 +419,31 @@ def build_csv_row(
             values.append("" if token.lower() == "egi:c" else token)
         else:
             values.append(f"{val:.6f}")
-        time.sleep(sleep_between)
+        if sleep_between > 0:
+            time.sleep(sleep_between)
     return values
+
+
+def sample_dict(
+    client: HostAscii,
+    known_indices: List[int],
+    unknown_indices: List[int],
+    sleep_between: float = 0.0,
+) -> dict[str, Any]:
+    """Return one sample as a dict: {column_name: float|None, 'timestamp': float}."""
+    row: dict[str, Any] = {"timestamp": time.time_ns() / 1e9}
+    for i in known_indices:
+        val, _ = gi_read(client, i)
+        name, divisor = KNOWN_GI_SCALE[i]
+        row[name] = (val / divisor) if val is not None else None
+        if sleep_between > 0:
+            time.sleep(sleep_between)
+    for i in unknown_indices:
+        val, _ = gi_read(client, i)
+        row[f"gi:{i}"] = val if val is not None else None
+        if sleep_between > 0:
+            time.sleep(sleep_between)
+    return row
 
 
 def format_table(
@@ -446,7 +451,6 @@ def format_table(
     status: StatusInfo,
     readings: list[Reading],
 ) -> str:
-    """Return a human-readable table string for diagnostics."""
     headers = ["CMD", "IDX", "NAME", "RAW", "SCALED", "UNITS"]
     rows: list[list[str]] = []
     for r in sorted(readings, key=lambda x: (x.cmd, x.index)):
@@ -481,12 +485,10 @@ def format_table(
     out.append(f"Firmware : {idinfo.firmware or ''}")
     out.append(f"Model    : {idinfo.model_name or ''}  rev: {idinfo.model_rev or ''}")
     out.append(f"Serial   : {idinfo.serial_number or ''}")
-
     out.append("\n=== Status ===")
     out.append(f"{status.raw or ''}")
     if status.code is not None:
         out.append(f"Status code (int): {status.code}")
-
     out.append("\n=== Readings (read-only) ===")
     out.append(fmt_row(headers, widths))
     out.append(fmt_row(["-" * w for w in widths], widths))
@@ -494,6 +496,194 @@ def format_table(
         out.append(fmt_row(row, widths))
     out.append("")
     return "\n".join(out)
+
+
+# ============================== Background Logger ===========================
+class BackgroundLogger:
+    """
+    Polls the device in a daemon thread and keeps the last `buffer_size`
+    samples in a ring buffer. Embed in another app:
+
+        from gpib_ion_gun_igps1101a import start_logger
+        h = start_logger("/dev/ttyUSB0", interval=1.0)
+        ...
+        rows = h.recent(10)        # list[dict], oldest -> newest
+        last = h.latest()          # single dict or None
+        cols = h.header()          # column names in the order present in row dicts
+        h.stop()
+
+    Or as a context manager:
+
+        with start_logger("/dev/ttyUSB0") as h:
+            ...
+    """
+
+    def __init__(
+        self,
+        port: str,
+        baud: int = 19200,
+        timeout: float = 1.0,
+        xonxoff: bool = True,
+        expect_model: str = "IGPS-1101A",
+        idle_quiet: float = 0.05,
+        max_rx_time: float = 0.30,
+        debug: bool = False,
+        probe_min: int = 0,
+        probe_max: int = 31,
+        only_known: bool = True,
+        probe_skip_silent: bool = True,
+        sleep_between: float = 0.0,
+        interval: float = 1.0,
+        buffer_size: int = 1000,
+    ) -> None:
+        self.port = port
+        self.baud = baud
+        self.timeout = timeout
+        self.xonxoff = xonxoff
+        self.expect_model = expect_model
+        self.idle_quiet = idle_quiet
+        self.max_rx_time = max_rx_time
+        self.debug = debug
+        self.probe_min = probe_min
+        self.probe_max = probe_max
+        self.only_known = only_known
+        self.probe_skip_silent = probe_skip_silent
+        self.sleep_between = sleep_between
+        self.interval = interval
+
+        self._buffer: deque[dict[str, Any]] = deque(maxlen=buffer_size)
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._client: HostAscii | None = None
+        self._dbg: DebugLog | None = None
+        self._idinfo: IdInfo | None = None
+        self._known: list[int] = []
+        self._unknown: list[int] = []
+        self._header: list[str] = []
+        self._exception: BaseException | None = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            raise RuntimeError("BackgroundLogger already running")
+        self._dbg = DebugLog(enabled=self.debug)
+        self._client = HostAscii(
+            port=self.port,
+            baud=self.baud,
+            timeout=self.timeout,
+            xonxoff=self.xonxoff,
+            dbg=self._dbg,
+            idle_quiet=self.idle_quiet,
+            max_rx_time=self.max_rx_time,
+        )
+        try:
+            self._idinfo = verify_expected_device(
+                self._client, self.expect_model, self._dbg
+            )
+            self._known, self._unknown = build_indices(
+                self.probe_min, self.probe_max, self.only_known
+            )
+            if self.probe_skip_silent and self._unknown:
+                survivors = probe_responsive_unknown(
+                    self._client, self._unknown, self.sleep_between
+                )
+                self._dbg.log(
+                    f"probe-skip: {len(self._unknown)} candidates -> "
+                    f"{len(survivors)} responsive: {survivors}"
+                )
+                self._unknown = survivors
+            self._header = build_csv_header(self._known, self._unknown)
+        except Exception:
+            self._client.close()
+            self._client = None
+            raise
+
+        self._stop_event.clear()
+        self._exception = None
+        self._thread = threading.Thread(
+            target=self._run, name=f"igps-logger-{self.port}", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        next_t = time.monotonic()
+        try:
+            while not self._stop_event.is_set():
+                assert self._client is not None
+                row = sample_dict(
+                    self._client, self._known, self._unknown, self.sleep_between
+                )
+                with self._lock:
+                    self._buffer.append(row)
+                next_t += self.interval
+                wait = next_t - time.monotonic()
+                if wait > 0:
+                    if self._stop_event.wait(timeout=wait):
+                        break
+                else:
+                    next_t = time.monotonic()
+        except BaseException as e:
+            self._exception = e
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+        if self._client:
+            try:
+                self._client.close()
+            finally:
+                self._client = None
+
+    def recent(self, n: int = 1) -> list[dict[str, Any]]:
+        """Return the last `n` samples, oldest -> newest. Returns at most n."""
+        if n <= 0:
+            return []
+        with self._lock:
+            if n >= len(self._buffer):
+                return list(self._buffer)
+            return list(self._buffer)[-n:]
+
+    def latest(self) -> dict[str, Any] | None:
+        with self._lock:
+            return self._buffer[-1] if self._buffer else None
+
+    def header(self) -> list[str]:
+        return list(self._header)
+
+    def identity(self) -> IdInfo | None:
+        return self._idinfo
+
+    def buffer_len(self) -> int:
+        with self._lock:
+            return len(self._buffer)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._buffer.clear()
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def exception(self) -> BaseException | None:
+        return self._exception
+
+    def __enter__(self) -> "BackgroundLogger":
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.stop()
+
+
+def start_logger(port: str, **kwargs: Any) -> BackgroundLogger:
+    """Construct, start, and return a BackgroundLogger in one call."""
+    bl = BackgroundLogger(port, **kwargs)
+    bl.start()
+    return bl
 
 
 __all__ = [
@@ -510,9 +700,13 @@ __all__ = [
     "parse_id",
     "verify_expected_device",
     "build_indices",
+    "probe_responsive_unknown",
     "build_csv_header",
     "build_csv_row",
+    "sample_dict",
     "gi_read",
     "format_table",
     "unix_ts",
+    "BackgroundLogger",
+    "start_logger",
 ]
