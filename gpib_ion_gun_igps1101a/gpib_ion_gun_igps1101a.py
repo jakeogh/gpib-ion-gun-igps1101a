@@ -90,7 +90,6 @@ class DebugLog:
 
     def log(self, *a: object) -> None:
         if self.enabled:
-            # Simple timestamp for human logs
             t = time.strftime("%Y-%m-%d %H:%M:%S") + f".{int((time.time()%1)*1000):03d}"
             print(
                 "[DEBUG]",
@@ -112,8 +111,8 @@ class HostAscii:
         xonxoff: bool,
         dbg: DebugLog,
         rx_chunk: int = 4096,
-        idle_quiet: float = 0.20,
-        max_rx_time: float = 1.50,
+        idle_quiet: float = 0.05,
+        max_rx_time: float = 0.30,
     ) -> None:
         self.dbg = dbg
         self.rx_chunk = rx_chunk
@@ -127,7 +126,7 @@ class HostAscii:
             stopbits=serial.STOPBITS_ONE,
             xonxoff=xonxoff,
             rtscts=False,
-            timeout=float(timeout),
+            timeout=0.02,  # short poll timeout for tight RX loop
             write_timeout=float(timeout),
         )
         self.ser.dtr = True
@@ -145,7 +144,13 @@ class HostAscii:
         except Exception as e:
             self.dbg.log("Error during close:", e)
 
-    def _read_until_quiet(self) -> bytes:
+    def _read_response(self, terminator: bytes = b"\r\n") -> bytes:
+        """
+        Return as soon as we receive a CRLF-terminated line (the HostASCII
+        response delimiter). Falls back to max_rx_time on truly silent channels,
+        and uses idle_quiet as a final drain check after CRLF is seen to catch
+        any trailing bytes the device sends in a second packet.
+        """
         start = time.time()
         last_data = start
         buf = bytearray()
@@ -155,25 +160,36 @@ class HostAscii:
             if chunk:
                 buf.extend(chunk)
                 last_data = now
+                if terminator in buf:
+                    # Brief drain for any trailing bytes
+                    drain_start = time.time()
+                    while (time.time() - drain_start) < self.idle_quiet:
+                        tail = self.ser.read(self.rx_chunk)
+                        if tail:
+                            buf.extend(tail)
+                            drain_start = time.time()
+                    return bytes(buf)
                 continue
-            if (now - last_data) >= self.idle_quiet:
-                break
+            # No data this poll
             if (now - start) >= self.max_rx_time:
-                break
-        return bytes(buf)
+                return bytes(buf)
+            # If we've received some data but no terminator, also bail on idle
+            if buf and (now - last_data) >= self.idle_quiet:
+                return bytes(buf)
 
     def txrx(
         self,
         cmd: str,
-        sleep_before_read: float = 0.05,
+        sleep_before_read: float = 0.0,
     ) -> str:
         data = cmd.encode("ascii") + b"\r\n"
         self.dbg.log(f"TX {cmd!r} [{len(data)}B] hex={_hexdump(data)}")
         self.ser.reset_input_buffer()
         self.ser.write(data)
         self.ser.flush()
-        time.sleep(sleep_before_read)
-        raw = self._read_until_quiet()
+        if sleep_before_read > 0:
+            time.sleep(sleep_before_read)
+        raw = self._read_response()
         self.dbg.log(f"RX [{len(raw)}B] hex={_hexdump(raw)}")
         try:
             return raw.decode("ascii", errors="replace")
@@ -325,7 +341,6 @@ def parse_gmc_hints(gmc_text: str) -> list[ChannelHint]:
                 counts_max=counts_max,
             )
         )
-    # dedupe by index
     seen: set[int] = set()
     uniq: list[ChannelHint] = []
     for h in hints:
@@ -392,11 +407,11 @@ def build_indices(
 
 
 def build_csv_header(known_indices: List[int], unknown_indices: List[int]) -> List[str]:
-    header_cols: list[str] = ["timestamp"]  # unix seconds, 9 decimals
+    header_cols: list[str] = ["timestamp"]
     for i in known_indices:
-        header_cols.append(KNOWN_GI_SCALE[i][0])  # volts
+        header_cols.append(KNOWN_GI_SCALE[i][0])
     for i in unknown_indices:
-        header_cols.append(f"gi:{i}")  # counts
+        header_cols.append(f"gi:{i}")
     return header_cols
 
 
@@ -413,7 +428,7 @@ def build_csv_row(
             values.append("")
         else:
             divisor = KNOWN_GI_SCALE[i][1]
-            values.append(f"{(val/divisor):.6f}")  # volts
+            values.append(f"{(val/divisor):.6f}")
         time.sleep(sleep_between)
     for i in unknown_indices:
         val, txt = gi_read(client, i)
@@ -421,7 +436,7 @@ def build_csv_row(
             token = (txt or "").strip().replace(",", ";")
             values.append("" if token.lower() == "egi:c" else token)
         else:
-            values.append(f"{val:.6f}")  # counts
+            values.append(f"{val:.6f}")
         time.sleep(sleep_between)
     return values
 

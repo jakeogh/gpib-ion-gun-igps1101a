@@ -68,14 +68,14 @@ CONTEXT = dict(help_option_names=["--help"])
 )
 @click.option(
     "--idle-quiet",
-    default=0.20,
+    default=0.05,
     show_default=True,
     type=float,
-    help="RX: end read after this many seconds of silence.",
+    help="RX: end read after this many seconds of silence (post-CRLF drain).",
 )
 @click.option(
     "--max-rx-time",
-    default=1.50,
+    default=0.30,
     show_default=True,
     type=float,
     help="RX: hard cap on a single response read (s).",
@@ -333,7 +333,6 @@ def read_cmd(
         print(",".join(header_cols), file=out)
     print(",".join(values), file=out)
 
-    # Optional autowrite to file while keeping stdout output
     if autowrite:
         date_str = time.strftime("%Y-%m-%d")
         epoch_s = int(time.time())
@@ -470,7 +469,6 @@ def log_cmd(
         if write_header:
             print(header_line, file=out, flush=True)
 
-    # Prepare autowrite file (new file each run, prefixed with epoch seconds)
     auto_fp = None
     auto_path = None
     if autowrite:
@@ -500,13 +498,9 @@ def log_cmd(
                 sleep_between,
             )
             line = ",".join(values)
-            # Always write to the primary destination
             print(line, file=out, flush=True)
-            # Also write to autowrite file if enabled
             if autowrite and auto_fp:
                 print(line, file=auto_fp, flush=True)
-            # And ensure values go to stdout when autowrite is used,
-            # even if primary 'out' is a file.
             if autowrite and out is not sys.stdout:
                 print(line, file=sys.stdout, flush=True)
 
