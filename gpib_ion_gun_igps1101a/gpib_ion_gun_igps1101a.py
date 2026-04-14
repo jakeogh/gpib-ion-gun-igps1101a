@@ -327,11 +327,10 @@ def verify_expected_device(
     expected_model_substr: str,
     dbg: DebugLog,
 ) -> IdInfo:
-    help_txt = cli.txrx("help")
-    if not help_txt.strip():
-        raise RuntimeError("No response to 'help'. Check wiring, baud, flow, CRLF.")
-    resp_gfw = cli.txrx("gfw")
     resp_gmn = cli.txrx("gmn")
+    if not resp_gmn.strip():
+        raise RuntimeError("No response to 'gmn'. Check wiring, baud, flow, CRLF.")
+    resp_gfw = cli.txrx("gfw")
     resp_gmr = cli.txrx("gmr")
     resp_gsn = cli.txrx("gsn")
     idinfo = parse_id(resp_gfw, resp_gmn, resp_gmr, resp_gsn)
@@ -353,6 +352,11 @@ def gi_read(cli: HostAscii, idx: int) -> tuple[Optional[float], str]:
     if re.search(r"(invalid|error|unknown|egi:c)", txt, re.I):
         return (None, txt.strip())
     return (_parse_reply_value(txt), txt.strip())
+
+
+def read_status(cli: HostAscii) -> StatusInfo:
+    """Send 'gs' and return parsed StatusInfo."""
+    return parse_status(cli.txrx("gs"))
 
 
 def build_indices(
@@ -429,9 +433,17 @@ def sample_dict(
     known_indices: List[int],
     unknown_indices: List[int],
     sleep_between: float = 0.0,
+    include_status: bool = False,
 ) -> dict[str, Any]:
-    """Return one sample as a dict: {column_name: float|None, 'timestamp': float}."""
+    """Return one sample as a dict: {column_name: float|None, 'timestamp': float}.
+    If include_status, also adds 'status_code' (int|None) and 'status_raw' (str)."""
     row: dict[str, Any] = {"timestamp": time.time_ns() / 1e9}
+    if include_status:
+        st = read_status(client)
+        row["status_code"] = st.code
+        row["status_raw"] = st.raw
+        if sleep_between > 0:
+            time.sleep(sleep_between)
     for i in known_indices:
         val, _ = gi_read(client, i)
         name, divisor = KNOWN_GI_SCALE[i]
@@ -535,6 +547,7 @@ class BackgroundLogger:
         sleep_between: float = 0.0,
         interval: float = 1.0,
         buffer_size: int = 1000,
+        include_status: bool = True,
     ) -> None:
         self.port = port
         self.baud = baud
@@ -550,6 +563,7 @@ class BackgroundLogger:
         self.probe_skip_silent = probe_skip_silent
         self.sleep_between = sleep_between
         self.interval = interval
+        self.include_status = include_status
 
         self._buffer: deque[dict[str, Any]] = deque(maxlen=buffer_size)
         self._lock = threading.Lock()
@@ -562,6 +576,7 @@ class BackgroundLogger:
         self._unknown: list[int] = []
         self._header: list[str] = []
         self._exception: BaseException | None = None
+        self._last_status: StatusInfo | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -593,6 +608,10 @@ class BackgroundLogger:
                 )
                 self._unknown = survivors
             self._header = build_csv_header(self._known, self._unknown)
+            if self.include_status:
+                self._header = (
+                    [self._header[0], "status_code", "status_raw"] + self._header[1:]
+                )
         except Exception:
             self._client.close()
             self._client = None
@@ -611,10 +630,19 @@ class BackgroundLogger:
             while not self._stop_event.is_set():
                 assert self._client is not None
                 row = sample_dict(
-                    self._client, self._known, self._unknown, self.sleep_between
+                    self._client,
+                    self._known,
+                    self._unknown,
+                    self.sleep_between,
+                    include_status=self.include_status,
                 )
                 with self._lock:
                     self._buffer.append(row)
+                    if self.include_status:
+                        self._last_status = StatusInfo(
+                            raw=row.get("status_raw"),
+                            code=row.get("status_code"),
+                        )
                 next_t += self.interval
                 wait = next_t - time.monotonic()
                 if wait > 0:
@@ -654,6 +682,11 @@ class BackgroundLogger:
 
     def identity(self) -> IdInfo | None:
         return self._idinfo
+
+    def status(self) -> StatusInfo | None:
+        """Most recent StatusInfo from the polling loop (None until first sample)."""
+        with self._lock:
+            return self._last_status
 
     def buffer_len(self) -> int:
         with self._lock:
@@ -705,6 +738,7 @@ __all__ = [
     "build_csv_row",
     "sample_dict",
     "gi_read",
+    "read_status",
     "format_table",
     "unix_ts",
     "BackgroundLogger",
