@@ -1,0 +1,47 @@
+[build-system]
+requires = [
+    "setuptools>=61.0",
+    "tomlkit",
+]
+build-backend = "pep508_url_version_backend"
+backend-path = [
+    ".",
+]
+
+[project]
+name = "gpib_ion_gun_igps1101a"
+version = "1!0.0.1776213795"
+description = "read stats from the Kimball Physics igps-1101a ion gun power supply"
+authors = [
+    { name = "Justin Keogh", email = "github.com@v6y.net" },
+]
+license = "ISC"
+dependencies = []
+requires-python = ">=3.11"
+
+[project.urls]
+Homepage = "https://github.com/jakeogh/gpib-ion-gun-igps1101a"
+
+[project.scripts]
+gpib-ion-gun-igps1101a = "gpib_ion_gun_igps1101a.cli:cli"
+
+[tool.setuptools]
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.package-data]
+gpib_ion_gun_igps1101a = [
+    "py.typed",
+]
+
+[tool.pep508-url-version-backend]
+dependencies-indexed = ["click", "rich", "serial"]
+dependencies-git = [
+    "click",
+    "rich",
+    "serial",
+]
+index-urls = [
+    "jakeogh.github.io",
+    "pip-index",
+]
