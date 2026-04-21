@@ -179,8 +179,7 @@ def diagnostic(
             name = units = None
             scaled = None
             if cmd == "gi" and idx in KNOWN_GI_SCALE and raw_val is not None:
-                name, div = KNOWN_GI_SCALE[idx]
-                units = "V"
+                name, div, units = KNOWN_GI_SCALE[idx]
                 scaled = raw_val / div
             readings.append(
                 Reading(

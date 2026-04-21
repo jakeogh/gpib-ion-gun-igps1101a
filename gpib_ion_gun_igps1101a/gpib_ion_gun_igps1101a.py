@@ -20,15 +20,17 @@ import serial
 from rich import print as pprint  # noqa: F401
 
 # ========================== Known Scaling ===============================
-KNOWN_GI_SCALE: dict[int, tuple[str, float]] = {
-    0: ("I+ ENERGY", 10.0),
-    1: ("SOURCE", 1000.0),
-    2: ("FIELD CONTROL", 10.0),
-    3: ("EXTRACT", 1.0),
-    4: ("FOCUS", 1.0),
-    5: ("E- ENERGY", 10.0),
-    8: ("X DEFL", 100.0),
-    9: ("Y DEFL", 100.0),
+KNOWN_GI_SCALE: dict[int, tuple[str, float, str]] = {
+    0: ("I+ ENERGY", 10.0, "V"),
+    1: ("SOURCE", 1000.0, "V"),
+    2: ("FIELD CONTROL", 10.0, "V"),
+    3: ("EXTRACT", 1.0, "V"),
+    4: ("FOCUS", 1.0, "V"),
+    5: ("E- ENERGY", 10.0, "V"),
+    8: ("X DEFL", 100.0, "V"),
+    9: ("Y DEFL", 100.0, "V"),
+    11: ("EMISSION", 1000.0, "A"),  # front panel 3.660A = 3660 counts
+    # 12: ("TARGET CURRENT", ???, "mA"),  # front panel 0.00mA, raw=26, divisor TBD
 }
 KNOWN_ORDER = sorted(KNOWN_GI_SCALE.keys())
 
@@ -446,7 +448,7 @@ def sample_dict(
             time.sleep(sleep_between)
     for i in known_indices:
         val, _ = gi_read(client, i)
-        name, divisor = KNOWN_GI_SCALE[i]
+        name, divisor, _units = KNOWN_GI_SCALE[i]
         row[name] = (val / divisor) if val is not None else None
         if sleep_between > 0:
             time.sleep(sleep_between)
