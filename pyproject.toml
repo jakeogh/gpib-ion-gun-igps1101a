@@ -10,7 +10,7 @@ backend-path = [
 
 [project]
 name = "gpib_ion_gun_igps1101a"
-version = "1!0.0.1776751247"
+version = "1!0.0.1780430039"
 description = "read stats from the Kimball Physics igps-1101a ion gun power supply"
 authors = [
     { name = "Justin Keogh", email = "github.com@v6y.net" },
