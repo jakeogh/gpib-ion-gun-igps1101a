@@ -10,7 +10,7 @@ backend-path = [
 
 [project]
 name = "gpib-ion-gun-igps1101a"
-version = "1!0.0.1780430502"
+version = "1!0.0.1780520293"
 description = "read stats from the Kimball Physics igps-1101a ion gun power supply"
 authors = [
     { name = "Justin Keogh", email = "github.com@v6y.net" },
@@ -35,11 +35,11 @@ gpib_ion_gun_igps1101a = [
 ]
 
 [tool.pep508-url-version-backend]
-dependencies-indexed = ["click", "rich", "serial"]
+dependencies-indexed = ["click", "rich", "pyserial"]
 dependencies-git = [
     "click",
     "rich",
-    "serial",
+    "pyserial",
 ]
 index-urls = [
     "jakeogh.github.io",
