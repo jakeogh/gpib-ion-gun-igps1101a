@@ -17,7 +17,6 @@ from typing import Optional
 from typing import Tuple
 
 import serial
-from rich import print as pprint  # noqa: F401
 
 # ========================== Known Scaling ===============================
 KNOWN_GI_SCALE: dict[int, tuple[str, float, str]] = {
@@ -193,14 +192,15 @@ def _first_kv(line: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def _parse_reply_value(s: str) -> Optional[float]:
+    """The value in a `gi:N,VALUE` reply. Only that form counts: a reply
+    with digits elsewhere in it, an error code say, is not a reading."""
     m = _GI_PAIR_RE.search(s)
     if m:
         try:
             return float(m.group(1))
-        except Exception:
-            pass
-    nums = _NUM_RE.findall(s)
-    return float(nums[-1]) if nums else None
+        except ValueError:
+            return None
+    return None
 
 
 def _parse_status_code(s: str) -> Optional[int]:

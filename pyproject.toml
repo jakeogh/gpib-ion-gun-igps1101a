@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpib-ion-gun-igps1101a"
-version = "1!0.0.1787109856"
+version = "1!0.0.1788940970"
 description = "read stats from the Kimball Physics igps-1101a ion gun power supply"
 authors = [
     { name = "Justin Keogh", email = "github.com@v6y.net" },
